@@ -11,12 +11,15 @@ use futures::SinkExt;
 use futures::Stream;
 use futures::StreamExt;
 use tokio::sync::broadcast;
+use tokio::time::interval;
+use tokio::time::Duration;
 use tracing::warn;
 use ws_shared::Msg;
 use ws_shared::MsgData;
 use ws_shared::ServerResp;
 
 const CAPACITY: usize = 64;
+const PONG_INTERVAL: u64 = 30;
 
 #[derive(Debug)]
 pub struct State {
@@ -97,11 +100,29 @@ where S: Stream<Item = Result<Message, axum::Error>> + Sink<Message> + Send + 's
     });
 
     let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            let data = msg.as_ref().try_into().unwrap();
-            if sender.send(Message::Text(data)).await.is_err() {
-                warn!("failed to send message");
-                break;
+        let mut interval = interval(Duration::from_secs(PONG_INTERVAL));
+
+        loop {
+            tokio::select! {
+                ev = rx.recv() => {
+                    if let Ok(msg) = ev {
+                        let data = msg.as_ref().try_into().unwrap();
+                        if sender.send(Message::Text(data)).await.is_err() {
+                            warn!("failed to send message");
+                            break;
+                        }
+                    }
+                    else {
+                        warn!("failed to subscribe from state");
+                        break;
+                    }
+                }
+                _ = interval.tick() => {
+                    if sender.send(Message::Pong(vec![])).await.is_err() {
+                        warn!("failed to send pong");
+                        break;
+                    }
+                }
             }
         }
     });
