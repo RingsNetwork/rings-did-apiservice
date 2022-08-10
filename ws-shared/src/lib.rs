@@ -4,17 +4,30 @@ use std::time::UNIX_EPOCH;
 use serde::Deserialize;
 use serde::Serialize;
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
+pub enum DidType {
+    DEFAULT,
+    ED25519,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
+pub struct Did {
+    pub id: String,
+    #[serde(rename(serialize = "type", deserialize = "type"))]
+    pub type_: DidType,
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Msg {
-    pub did: String,
-    pub timestamp: u64,
+    pub did: Did,
     pub data: MsgData,
+    pub timestamp: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct ServerResp {
-    pub timestamp: u64,
     pub data: ServerRespData,
+    pub timestamp: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -27,26 +40,41 @@ pub enum MsgData {
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerRespData {
-    List(Vec<String>),
+    List(Vec<Did>),
+}
+
+impl Did {
+    pub fn default(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            type_: DidType::DEFAULT,
+        }
+    }
+    pub fn ed25519(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            type_: DidType::ED25519,
+        }
+    }
 }
 
 impl Msg {
-    pub fn new(did: &str, data: MsgData) -> Self {
+    pub fn new(did: Did, data: MsgData) -> Self {
         Msg {
-            did: did.into(),
+            did,
+            data,
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-            data,
         }
     }
 
-    pub fn join(did: &str) -> Self {
+    pub fn join(did: Did) -> Self {
         Msg::new(did, MsgData::Join)
     }
 
-    pub fn leave(did: &str) -> Self {
+    pub fn leave(did: Did) -> Self {
         Msg::new(did, MsgData::Leave)
     }
 }
@@ -61,7 +89,7 @@ impl ServerResp {
             data,
         }
     }
-    pub fn list(dids: Vec<String>) -> Self {
+    pub fn list(dids: Vec<Did>) -> Self {
         ServerResp::new(ServerRespData::List(dids))
     }
 }

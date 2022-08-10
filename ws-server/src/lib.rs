@@ -14,6 +14,7 @@ use tokio::sync::broadcast;
 use tokio::time::interval;
 use tokio::time::Duration;
 use tracing::warn;
+use ws_shared::Did;
 use ws_shared::Msg;
 use ws_shared::MsgData;
 use ws_shared::ServerResp;
@@ -23,7 +24,7 @@ const PONG_INTERVAL: u64 = 30;
 
 #[derive(Debug)]
 pub struct State {
-    online_dids: DashSet<String>,
+    online_dids: DashSet<Did>,
     tx: broadcast::Sender<Arc<Msg>>,
 }
 
@@ -38,17 +39,17 @@ impl Default for State {
 }
 
 impl State {
-    fn join(&self, did: &str) {
-        self.online_dids.insert(did.to_string());
+    fn join(&self, did: Did) {
+        self.online_dids.insert(did);
     }
 
-    fn leave(&self, dids: Arc<DashSet<String>>) {
+    fn leave(&self, dids: Arc<DashSet<Did>>) {
         for did in dids.iter().map(|v| v.clone()) {
             self.online_dids.remove(&did);
         }
     }
 
-    fn list(&self, skip: Option<usize>) -> Vec<String> {
+    fn list(&self, skip: Option<usize>) -> Vec<Did> {
         self.online_dids
             .iter()
             .skip(skip.unwrap_or(0))
@@ -65,7 +66,7 @@ pub async fn ws_handler(
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
-pub async fn list_handler(Extension(state): Extension<Arc<State>>) -> Json<Vec<String>> {
+pub async fn list_handler(Extension(state): Extension<Arc<State>>) -> Json<Vec<Did>> {
     state.list(None).into()
 }
 
@@ -138,22 +139,22 @@ where S: Stream<Item = Result<Message, axum::Error>> + Sink<Message> + Send + 's
     state.leave(joined_dids.clone());
 
     for did in joined_dids.iter() {
-        if let Err(e) = state.tx.send(Arc::new(Msg::leave(&did))) {
+        if let Err(e) = state.tx.send(Arc::new(Msg::leave(did.clone()))) {
             warn!("failed to send leave message: {e}");
         }
     }
 }
 
-async fn handle_message(msg: Msg, state: Arc<State>, joined_dids: Arc<DashSet<String>>) {
+async fn handle_message(msg: Msg, state: Arc<State>, joined_dids: Arc<DashSet<Did>>) {
     let msg = match msg.data {
         MsgData::Join => {
-            state.join(&msg.did);
-            joined_dids.insert(msg.did.to_string());
+            state.join(msg.did.clone());
+            joined_dids.insert(msg.did.clone());
             msg
         }
         MsgData::Leave => {
-            let dids: Arc<DashSet<String>> = Arc::new(DashSet::new());
-            dids.insert(msg.did.to_string());
+            let dids: Arc<DashSet<Did>> = Arc::new(DashSet::new());
+            dids.insert(msg.did.clone());
             state.leave(dids);
             joined_dids.remove(&msg.did);
             msg
@@ -177,19 +178,26 @@ mod tests {
     async fn handle_join_and_leave_should_work() -> Result<()> {
         let (mut client1, mut client2, state) = prepare_connections().await?;
 
-        let msg1 = &Msg::new("carol", MsgData::Join);
+        let msg1 = &Msg::new(Did::default("carol"), MsgData::Join);
         client1.send(Message::Text(msg1.try_into()?))?;
 
-        assert_recv_msg(&mut client1, "carol", MsgData::Join).await?;
-        assert_recv_msg(&mut client2, "carol", MsgData::Join).await?;
-        assert_list_equal(state.clone(), vec!["alice", "bob", "carol"]);
+        assert_recv_msg(&mut client1, &Did::default("carol"), MsgData::Join).await?;
+        assert_recv_msg(&mut client2, &Did::default("carol"), MsgData::Join).await?;
+        assert_list_equal(state.clone(), vec![
+            Did::default("alice"),
+            Did::default("bob"),
+            Did::default("carol"),
+        ]);
 
-        let msg2 = &Msg::new("carol", MsgData::Leave);
+        let msg2 = &Msg::new(Did::default("carol"), MsgData::Leave);
         client1.send(Message::Text(msg2.try_into()?))?;
 
-        assert_recv_msg(&mut client1, "carol", MsgData::Leave).await?;
-        assert_recv_msg(&mut client2, "carol", MsgData::Leave).await?;
-        assert_list_equal(state.clone(), vec!["alice", "bob"]);
+        assert_recv_msg(&mut client1, &Did::default("carol"), MsgData::Leave).await?;
+        assert_recv_msg(&mut client2, &Did::default("carol"), MsgData::Leave).await?;
+        assert_list_equal(state.clone(), vec![
+            Did::default("alice"),
+            Did::default("bob"),
+        ]);
 
         Ok(())
     }
@@ -198,21 +206,25 @@ mod tests {
     async fn handle_client_disconnect_should_work() -> Result<()> {
         let (mut client1, mut client2, state) = prepare_connections().await?;
 
-        let msg1 = &Msg::new("carol", MsgData::Join);
+        let msg1 = &Msg::new(Did::default("carol"), MsgData::Join);
         client1.send(Message::Text(msg1.try_into()?))?;
 
-        assert_recv_msg(&mut client1, "carol", MsgData::Join).await?;
-        assert_recv_msg(&mut client2, "carol", MsgData::Join).await?;
-        assert_list_equal(state.clone(), vec!["alice", "bob", "carol"]);
+        assert_recv_msg(&mut client1, &Did::default("carol"), MsgData::Join).await?;
+        assert_recv_msg(&mut client2, &Did::default("carol"), MsgData::Join).await?;
+        assert_list_equal(state.clone(), vec![
+            Did::default("alice"),
+            Did::default("bob"),
+            Did::default("carol"),
+        ]);
 
         drop(client1);
         assert_recv_dids_msg(
             &mut client2,
-            vec!["alice".to_string(), "carol".to_string()],
+            vec![Did::default("alice"), Did::default("carol")],
             MsgData::Leave,
         )
         .await?;
-        assert_list_equal(state.clone(), vec!["bob"]);
+        assert_list_equal(state.clone(), vec![Did::default("bob")]);
 
         Ok(())
     }
@@ -238,12 +250,12 @@ mod tests {
         assert_eq!(dids.len(), 0);
 
         // client1 join, the server broadcast a join message
-        let msg1 = &Msg::new("alice", MsgData::Join);
+        let msg1 = &Msg::new(Did::default("alice"), MsgData::Join);
         client1.send(Message::Text(msg1.try_into()?))?;
-        assert_recv_msg(&mut client1, "alice", MsgData::Join).await?;
+        assert_recv_msg(&mut client1, &Did::default("alice"), MsgData::Join).await?;
 
         // check the state of server updated
-        assert_list_equal(state.clone(), vec!["alice"]);
+        assert_list_equal(state.clone(), vec![Did::default("alice")]);
 
         // mimic server behavior for client1
         let state1 = state.clone();
@@ -254,37 +266,40 @@ mod tests {
         // client2 will get dids list from server
         assert_recv_resp(
             &mut client2,
-            ServerRespData::List(vec!["alice".to_string()]),
+            ServerRespData::List(vec![Did::default("alice")]),
         )
         .await?;
 
         // client2 join, the server broadcast a join message
-        let msg2 = &Msg::new("bob", MsgData::Join);
+        let msg2 = &Msg::new(Did::default("bob"), MsgData::Join);
         client2.send(Message::Text(msg2.try_into()?))?;
-        assert_recv_msg(&mut client1, "bob", MsgData::Join).await?;
-        assert_recv_msg(&mut client2, "bob", MsgData::Join).await?;
+        assert_recv_msg(&mut client1, &Did::default("bob"), MsgData::Join).await?;
+        assert_recv_msg(&mut client2, &Did::default("bob"), MsgData::Join).await?;
 
         // check the state of server updated
-        assert_list_equal(state.clone(), vec!["alice", "bob"]);
+        assert_list_equal(state.clone(), vec![
+            Did::default("alice"),
+            Did::default("bob"),
+        ]);
 
         // return the clients and state for further tests
         Ok((client1, client2, state))
     }
 
-    fn assert_list_equal(state: Arc<State>, expected: Vec<&str>) {
+    fn assert_list_equal(state: Arc<State>, expected: Vec<Did>) {
         let mut dids = state.list(None);
-        dids.sort();
+        dids.sort_by_key(|did| did.id.clone());
         assert_eq!(dids, expected);
     }
 
     async fn assert_recv_msg(
         client: &mut FakeClient<Message>,
-        did: &str,
+        did: &Did,
         data: MsgData,
     ) -> Result<()> {
         if let Some(Message::Text(msg1)) = client.recv().await {
             let msg = Msg::try_from(msg1.as_str())?;
-            assert_eq!(msg.did, did);
+            assert_eq!(msg.did, *did);
             assert_eq!(msg.data, data);
         }
 
@@ -293,11 +308,11 @@ mod tests {
 
     async fn assert_recv_dids_msg(
         client: &mut FakeClient<Message>,
-        dids: Vec<String>,
+        dids: Vec<Did>,
         data: MsgData,
     ) -> Result<()> {
         let mut expected_dids = dids.clone();
-        expected_dids.sort();
+        expected_dids.sort_by_key(|did| did.id.clone());
 
         let mut got_dids = vec![];
 
@@ -309,7 +324,7 @@ mod tests {
             }
         }
 
-        got_dids.sort();
+        got_dids.sort_by_key(|did| did.id.clone());
         assert_eq!(got_dids, expected_dids);
 
         Ok::<_, anyhow::Error>(())
