@@ -3,8 +3,11 @@ use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
 use serde::Serialize;
+use serde_repr::Deserialize_repr;
+use serde_repr::Serialize_repr;
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, Serialize_repr, Deserialize_repr, PartialEq, Eq, Hash, Clone)]
+#[repr(u8)]
 pub enum DidType {
     DEFAULT = 0,
     ED25519 = 1,
@@ -123,5 +126,16 @@ impl TryFrom<&ServerResp> for String {
 
     fn try_from(msg: &ServerResp) -> Result<Self, Self::Error> {
         serde_json::to_string(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_str_to_msg() {
+        let s = r#"{"did":{"id":"0x77FdC5c3937E509d2aB0DeAA84bD47741B58d0d9","type":0},"timestamp":1683788104386,"data":"join"}"#;
+        let _: Msg = s.try_into().unwrap();
     }
 }
