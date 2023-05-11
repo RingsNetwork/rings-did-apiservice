@@ -6,8 +6,8 @@ use serde::Serialize;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
 pub enum DidType {
-    DEFAULT,
-    ED25519,
+    DEFAULT = 0,
+    ED25519 = 1,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
